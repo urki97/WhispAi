@@ -1,0 +1,13 @@
+uploads/
+venv_whis/
+__pycache__/
+*.py[cod]
+
+# Logs and runtime files
+*.log
+
+# Environment variables file (do not commit secrets)
+.env
+
+# Operating system files
+.DS_Store
