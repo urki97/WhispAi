@@ -13,6 +13,10 @@ class Config:
     # Configuración de MongoDB
     MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/whispai")
 
+    # JWT
+    JWT_SECRET = os.getenv("JWT_SECRET", "supersecreta")
+    JWT_EXPIRATION_MINUTES = int(os.getenv("JWT_EXPIRATION_MINUTES", 60))
+
     # Configuración de MinIO (almacenamiento de archivos)
     MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
     MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")

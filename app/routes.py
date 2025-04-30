@@ -1,5 +1,3 @@
-
-
 from flask import current_app, request, jsonify
 import os
 import uuid
@@ -9,7 +7,7 @@ import threading
 from config import Config
 from app import app, storage_service, db
 from app.whisper_service import ensure_model_loaded, transcribe_audio
-from bson.objectid import ObjectId
+from app.jwt_utils import generate_jwt, jwt_required
 
 def allowed_file(filename: str) -> bool:
     """Comprueba si la extensión del archivo es permitida."""
@@ -18,11 +16,22 @@ def allowed_file(filename: str) -> bool:
     ext = filename.rsplit('.', 1)[1].lower()
     return ext in Config.ALLOWED_EXTENSIONS
 
+def format_transcription(text: str, output_format: str) -> str:
+    """Formatea la transcripción según el formato solicitado."""
+    if output_format == "text":
+        return text.strip()
+    elif output_format == "sentences":
+        sentences = text.replace('. ', '.\n')
+        return sentences.strip()
+    elif output_format == "summary":
+        return "[Resumen no implementado]"
+    elif output_format == "actions":
+        return "[Acciones no implementadas]"
+    else:
+        return text.strip()  
+
 def background_transcription(audio_id: str, object_name: str, mode: str = "accurate", output_format: str = "text"):
     """Procesa la transcripción en segundo plano, aplicando el formato deseado."""
-    import tempfile
-    from app import app
-
     with app.app_context():
         tmp_file = None
         try:
@@ -53,35 +62,47 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
             if tmp_file and os.path.exists(tmp_file.name):
                 os.remove(tmp_file.name)
 
+@app.route('/api/login', methods=['POST'])
+def login_user():
+    data = request.get_json()
+    if not data or not data.get("email") or not data.get("password"):
+        return jsonify({"error": "Email y contraseña requeridos"}), 400
 
-def format_transcription(text: str, output_format: str) -> str:
-    """Formatea la transcripción según el formato solicitado."""
-    if output_format == "text":
-        return text.strip()
-    elif output_format == "sentences":
-        sentences = text.replace('. ', '.\n')
-        return sentences.strip()
-    elif output_format == "summary":
-        return "[Resumen no implementado]"
-    elif output_format == "actions":
-        return "[Acciones no implementadas]"
-    else:
-        return text.strip()  
+    user = db.get_user_by_email(data["email"])
+    if not user or not db.verify_password(user["password_hash"], data["password"]):
+        return jsonify({"error": "Credenciales inválidas"}), 401
 
-def is_valid_token(token: str) -> bool:
+    token = generate_jwt(user["_id"], user.get("name"))
+    return jsonify({
+        "user_id": user["_id"],
+        "jwt": token,
+        "name": user.get("name")
+    }), 200
+
+@app.route('/api/register', methods=['POST'])
+def register_user():
+    """Crea un usuario nuevo."""
+    data = request.get_json()
     try:
-        uuid.UUID(token, version=4)
-        return True
-    except ValueError:
-        return False
+        user = db.create_user(
+            name=data.get("name"),
+            email=data.get("email"),
+            password=data.get("password")
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    token = generate_jwt(user["_id"], user.get("name"))
+    return jsonify({
+        "user_id": user["_id"],
+        "jwt": token,
+        "name": user.get("name")
+    }), 201
 
 @app.route('/api/upload', methods=['POST'])
+@jwt_required
 def upload_audio():
     """Sube un archivo de audio, guarda metadatos y lanza transcripción en background."""
-    user_token = request.form.get("user_token")
-    if not user_token or not is_valid_token(user_token):
-        return jsonify({"error": "Token de usuario inválido"}), 400
-
     if 'file' not in request.files:
         return jsonify({"error": "No se encontró el archivo en la petición"}), 400
 
@@ -115,7 +136,7 @@ def upload_audio():
         "transcription": None,
         "status": "processing",
         "output_format": output_format,
-        "user_token": user_token
+        "owner_id": request.user["_id"]
     }
 
     try:
@@ -124,7 +145,6 @@ def upload_audio():
         current_app.logger.error(f"Error guardando metadatos en MongoDB: {e}")
         return jsonify({"error": "Error al guardar metadatos en la base de datos"}), 500
 
-    # Lanzar transcripción en background
     thread = threading.Thread(target=background_transcription, args=(file_id, object_name, mode, output_format))
     thread.start()
 
@@ -134,108 +154,51 @@ def upload_audio():
         "mode": mode
     }), 202
 
-@app.route('/api/transcribe', methods=['POST'])
-def transcribe_audio_route():
-    """Transcribe un audio ya subido usando Whisper, eligiendo modo."""
-
-    audio_id = request.form.get("id") or (request.json and request.json.get("id"))
-    mode = request.form.get("mode") or (request.json and request.json.get("mode")) or "accurate"
-
-    if not audio_id:
-        return jsonify({"error": "ID de audio no proporcionado"}), 400
-
-    audio_doc = db.find_audio_by_id(audio_id)
-    if not audio_doc:
-        return jsonify({"error": "Audio no encontrado"}), 404
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-        storage_service.download_file(audio_doc["object_name"], tmp_file.name)
-
-    try:
-        if mode == "fast":
-            ensure_model_loaded("small")
-        elif mode == "longtext":
-            ensure_model_loaded("medium")
-        else:
-            ensure_model_loaded("base")
-
-        transcription = transcribe_audio(tmp_file.name)
-        db.update_audio_transcription(audio_id, transcription)
-
-        return jsonify({
-            "message": "Transcripción completada",
-            "mode": mode,
-            "transcription": transcription
-        }), 200
-    finally:
-        os.remove(tmp_file.name)
-
 @app.route('/api/result/<audio_id>', methods=['GET'])
+@jwt_required
 def get_transcription_result(audio_id):
-    user_token = request.args.get("user_token")
-    if not user_token or not is_valid_token(user_token):
-        return jsonify({"error": "Token de usuario inválido"}), 400
-
     audio_doc = db.find_audio_by_id(audio_id)
     if not audio_doc:
         return jsonify({"error": "Audio no encontrado"}), 404
 
-    if audio_doc.get("user_token") != user_token:
+    if audio_doc.get("owner_id") != request.user["_id"]:
         return jsonify({"error": "Acceso no autorizado"}), 403
-
-    if not audio_doc:
-        return jsonify({"error": "Audio no encontrado"}), 404
-
-    transcription = audio_doc.get("transcription")
-    status = audio_doc.get("status", "processing")
-    output_format = audio_doc.get("output_format", "text")
-    error_message = audio_doc.get("error_message", None)
 
     response = {
         "id": audio_id,
-        "status": status,
-        "format": output_format,
-        "transcription": transcription
+        "status": audio_doc.get("status", "processing"),
+        "format": audio_doc.get("output_format", "text"),
+        "transcription": audio_doc.get("transcription"),
     }
 
-    if error_message:
-        response["error_message"] = error_message
+    if audio_doc.get("error_message"):
+        response["error_message"] = audio_doc["error_message"]
 
     return jsonify(response), 200
 
 @app.route('/api/list', methods=['GET'])
+@jwt_required
 def list_audios():
     """Devuelve una lista de audios del usuario."""
-    user_token = request.args.get("user_token")
-    if not user_token:
-        return jsonify({"error": "Falta user_token"}), 400
-
-    audios = db.list_audios_by_user(user_token)
-    result = []
-
-    for audio in audios:
-        result.append({
-            "id": audio["_id"],
-            "filename": audio.get("filename"),
-            "status": audio.get("status", "unknown"),
-            "upload_time": audio.get("upload_time"),
-            "format": audio.get("output_format", "text")
-        })
+    audios = db.list_audios_by_user_id(request.user["_id"])
+    result = [{
+        "id": a["_id"],
+        "filename": a.get("filename"),
+        "status": a.get("status"),
+        "upload_time": a.get("upload_time"),
+        "format": a.get("output_format")
+    } for a in audios]
 
     return jsonify(result), 200
 
 @app.route('/api/audio/<audio_id>', methods=['DELETE'])
+@jwt_required
 def delete_audio(audio_id):
-    user_token = request.args.get("user_token") or request.form.get("user_token")
-
-    if not user_token or not is_valid_token(user_token):
-        return jsonify({"error": "Token de usuario inválido"}), 400
-
     audio_doc = db.find_audio_by_id(audio_id)
     if not audio_doc:
         return jsonify({"error": "Audio no encontrado"}), 404
 
-    if audio_doc.get("user_token") != user_token:
+    if audio_doc.get("owner_id") != request.user["_id"]:
         return jsonify({"error": "Acceso no autorizado"}), 403
 
     try:
@@ -246,10 +209,3 @@ def delete_audio(audio_id):
     except Exception as e:
         current_app.logger.error(f"Error al eliminar audio {audio_id}: {e}")
         return jsonify({"error": "No se pudo eliminar el audio"}), 500
-
-@app.route('/api/register', methods=['POST'])
-def register_user():
-    """Genera un token UUIDv4."""
-    new_token = str(uuid.uuid4())
-    db.save_user(new_token)
-    return jsonify({"user_token": new_token}), 201
