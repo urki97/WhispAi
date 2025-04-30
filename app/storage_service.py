@@ -47,3 +47,7 @@ def download_file(object_name, download_path):
     if minio_client is None:
         raise RuntimeError("Cliente de MinIO no inicializado")
     minio_client.fget_object(bucket_name, object_name, download_path)
+
+def delete_file(object_name: str):
+    """Elimina un archivo del bucket de MinIO."""
+    minio_client.remove_object(current_app.config["MINIO_BUCKET"], object_name)

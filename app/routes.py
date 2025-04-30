@@ -1,4 +1,4 @@
-# app/routes.py
+
 
 from flask import current_app, request, jsonify
 import os
@@ -184,4 +184,40 @@ def get_transcription_result(audio_id):
 
     return jsonify(response), 200
 
+@app.route('/api/list', methods=['GET'])
+def list_audios():
+    """Devuelve una lista de todos los audios registrados."""
+    audios = db.list_all_audios()
+    result = []
 
+    for audio in audios:
+        result.append({
+            "id": audio["_id"],
+            "filename": audio.get("filename"),
+            "status": audio.get("status", "unknown"),
+            "upload_time": audio.get("upload_time"),
+            "format": audio.get("output_format", "text")
+        })
+
+    return jsonify(result), 200
+
+@app.route('/api/audio/<audio_id>', methods=['DELETE'])
+def delete_audio(audio_id):
+    """Elimina un audio de MinIO y su entrada en MongoDB."""
+    audio_doc = db.find_audio_by_id(audio_id)
+    if not audio_doc:
+        return jsonify({"error": "Audio no encontrado"}), 404
+
+    try:
+        # Eliminar de MinIO
+        storage_service.delete_file(audio_doc["object_name"])
+
+        # Eliminar de MongoDB
+        db.delete_audio(audio_id)
+
+        current_app.logger.info(f"Audio eliminado: {audio_id}")
+        return jsonify({"message": "Audio eliminado correctamente"}), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Error al eliminar audio {audio_id}: {e}")
+        return jsonify({"error": "No se pudo eliminar el audio"}), 500

@@ -1,4 +1,5 @@
 from pymongo import MongoClient
+from flask import current_app
 
 mongo_client = None
 mongo_db = None
@@ -40,7 +41,24 @@ def update_audio_transcription(audio_id, transcription_text):
 
 def update_audio_status(audio_id: str, status: str, error_message: str = None):
     """Actualiza el estado de un audio en MongoDB."""
+    if mongo_db is None:
+        raise RuntimeError("Base de datos no inicializada")
     update_data = {"status": status}
     if error_message:
         update_data["error_message"] = error_message
-    collection.update_one({"_id": audio_id}, {"$set": update_data})
+    mongo_db["audios"].update_one({"_id": audio_id}, {"$set": update_data})
+
+
+def list_all_audios():
+    """Devuelve todos los documentos de audio."""
+    if mongo_db is None:
+        raise RuntimeError("Base de datos no inicializada")
+    return list(mongo_db["audios"].find())
+
+
+def delete_audio(audio_id: str):
+    """Elimina un documento de MongoDB por ID."""
+    if mongo_db is None:
+        raise RuntimeError("Base de datos no inicializada")
+    mongo_db["audios"].delete_one({"_id": audio_id})
+
