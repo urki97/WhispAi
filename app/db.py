@@ -37,3 +37,10 @@ def update_audio_transcription(audio_id, transcription_text):
         {"_id": audio_id},
         {"$set": {"transcription": transcription_text}}
     )
+
+def update_audio_status(audio_id: str, status: str, error_message: str = None):
+    """Actualiza el estado de un audio en MongoDB."""
+    update_data = {"status": status}
+    if error_message:
+        update_data["error_message"] = error_message
+    collection.update_one({"_id": audio_id}, {"$set": update_data})

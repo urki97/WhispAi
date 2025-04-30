@@ -18,12 +18,13 @@ def allowed_file(filename: str) -> bool:
     ext = filename.rsplit('.', 1)[1].lower()
     return ext in Config.ALLOWED_EXTENSIONS
 
-def background_transcription(audio_id: str, object_name: str, mode: str = "accurate"):
-    """Procesa la transcripción en segundo plano."""
+def background_transcription(audio_id: str, object_name: str, mode: str = "accurate", output_format: str = "text"):
+    """Procesa la transcripción en segundo plano, aplicando el formato deseado."""
     import tempfile
-    from app import app  # 👈 importar la app
+    from app import app
 
-    with app.app_context():  # 👈 Entrar manualmente en contexto Flask
+    with app.app_context():
+        tmp_file = None
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
                 storage_service.download_file(object_name, tmp_file.name)
@@ -36,16 +37,36 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
                 ensure_model_loaded("base")
 
             transcription = transcribe_audio(tmp_file.name)
+            transcription = format_transcription(transcription, output_format)
+
             db.update_audio_transcription(audio_id, transcription)
+            db.update_audio_status(audio_id, "completed")
 
             current_app.logger.info(f"Transcripción completada para audio ID {audio_id}")
 
         except Exception as e:
-            current_app.logger.error(f"Error en transcripción background para {audio_id}: {e}")
+            error_message = str(e)
+            current_app.logger.error(f"Error en transcripción background para {audio_id}: {error_message}")
+            db.update_audio_status(audio_id, "failed", error_message)
 
         finally:
-            if os.path.exists(tmp_file.name):
+            if tmp_file and os.path.exists(tmp_file.name):
                 os.remove(tmp_file.name)
+
+
+def format_transcription(text: str, output_format: str) -> str:
+    """Formatea la transcripción según el formato solicitado."""
+    if output_format == "text":
+        return text.strip()
+    elif output_format == "sentences":
+        sentences = text.replace('. ', '.\n')
+        return sentences.strip()
+    elif output_format == "summary":
+        return "[Resumen no implementado]"
+    elif output_format == "actions":
+        return "[Acciones no implementadas]"
+    else:
+        return text.strip()  
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -63,7 +84,7 @@ def upload_audio():
         return jsonify({"error": "Tipo de archivo no soportado"}), 400
 
     mode = request.form.get("mode") or "accurate"
-
+    output_format = request.form.get("format") or "text"
     file_id = str(uuid.uuid4())
     ext = os.path.splitext(file.filename)[1]
     object_name = file_id + ext
@@ -83,7 +104,8 @@ def upload_audio():
         "size": file.content_length or 0,
         "upload_time": datetime.datetime.utcnow(),
         "transcription": None,
-        "status": "processing"
+        "status": "processing",
+        "output_format": output_format,
     }
 
     try:
@@ -93,7 +115,7 @@ def upload_audio():
         return jsonify({"error": "Error al guardar metadatos en la base de datos"}), 500
 
     # Lanzar transcripción en background
-    thread = threading.Thread(target=background_transcription, args=(file_id, object_name, mode))
+    thread = threading.Thread(target=background_transcription, args=(file_id, object_name, mode, output_format))
     thread.start()
 
     return jsonify({
@@ -140,19 +162,26 @@ def transcribe_audio_route():
 
 @app.route('/api/result/<audio_id>', methods=['GET'])
 def get_transcription_result(audio_id):
-    """Consulta el estado y resultado de una transcripción por ID."""
+    """Consulta el estado, formato y resultado de una transcripción por ID."""
     audio_doc = db.find_audio_by_id(audio_id)
     if not audio_doc:
         return jsonify({"error": "Audio no encontrado"}), 404
 
     transcription = audio_doc.get("transcription")
-    if transcription:
-        status = "completed"
-    else:
-        status = "processing"
+    status = audio_doc.get("status", "processing")
+    output_format = audio_doc.get("output_format", "text")
+    error_message = audio_doc.get("error_message", None)
 
-    return jsonify({
+    response = {
         "id": audio_id,
         "status": status,
-        "transcription": transcription  # será None si aún no terminó
-    }), 200
+        "format": output_format,
+        "transcription": transcription
+    }
+
+    if error_message:
+        response["error_message"] = error_message
+
+    return jsonify(response), 200
+
+
