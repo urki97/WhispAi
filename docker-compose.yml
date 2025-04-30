@@ -1,41 +1,24 @@
-version: "3.8"
 services:
-  app:
-    image: python:3.11-slim
-    container_name: whispai_app
-    working_dir: /app
-    volumes:
-      - .:/app
-    command: /bin/sh -c "pip install -r requirements.txt && flask run --host=0.0.0.0"
-    env_file:
-      - .env
-    depends_on:
-      - mongodb
-      - minio
-
-  mongodb:
-    image: mongo:6.0
-    container_name: whispai_mongo
+  mongo:
+    image: mongo:latest
+    container_name: mongo_dev
     ports:
       - "27017:27017"
     volumes:
-      - mongo_data:/data/db
+      - ./mongo_data:/data/db
     environment:
-      - MONGO_INITDB_DATABASE=whispai
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD}
 
   minio:
     image: minio/minio:latest
-    container_name: whispai_minio
-    command: server /data --console-address ":9001"
+    container_name: minio_dev
     ports:
       - "9000:9000"
-      - "9001:9001"
+      - "9090:9090"  # Consola web
     environment:
-      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
-      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9090"
     volumes:
-      - minio_data:/data
-
-volumes:
-  mongo_data:
-  minio_data:
+      - ./minio_data:/data

@@ -68,10 +68,19 @@ def format_transcription(text: str, output_format: str) -> str:
     else:
         return text.strip()  
 
+def is_valid_token(token: str) -> bool:
+    try:
+        uuid.UUID(token, version=4)
+        return True
+    except ValueError:
+        return False
 
 @app.route('/api/upload', methods=['POST'])
 def upload_audio():
     """Sube un archivo de audio, guarda metadatos y lanza transcripción en background."""
+    user_token = request.form.get("user_token")
+    if not user_token or not is_valid_token(user_token):
+        return jsonify({"error": "Token de usuario inválido"}), 400
 
     if 'file' not in request.files:
         return jsonify({"error": "No se encontró el archivo en la petición"}), 400
@@ -106,6 +115,7 @@ def upload_audio():
         "transcription": None,
         "status": "processing",
         "output_format": output_format,
+        "user_token": user_token
     }
 
     try:
@@ -162,8 +172,17 @@ def transcribe_audio_route():
 
 @app.route('/api/result/<audio_id>', methods=['GET'])
 def get_transcription_result(audio_id):
-    """Consulta el estado, formato y resultado de una transcripción por ID."""
+    user_token = request.args.get("user_token")
+    if not user_token or not is_valid_token(user_token):
+        return jsonify({"error": "Token de usuario inválido"}), 400
+
     audio_doc = db.find_audio_by_id(audio_id)
+    if not audio_doc:
+        return jsonify({"error": "Audio no encontrado"}), 404
+
+    if audio_doc.get("user_token") != user_token:
+        return jsonify({"error": "Acceso no autorizado"}), 403
+
     if not audio_doc:
         return jsonify({"error": "Audio no encontrado"}), 404
 
@@ -186,8 +205,12 @@ def get_transcription_result(audio_id):
 
 @app.route('/api/list', methods=['GET'])
 def list_audios():
-    """Devuelve una lista de todos los audios registrados."""
-    audios = db.list_all_audios()
+    """Devuelve una lista de audios del usuario."""
+    user_token = request.args.get("user_token")
+    if not user_token:
+        return jsonify({"error": "Falta user_token"}), 400
+
+    audios = db.list_audios_by_user(user_token)
     result = []
 
     for audio in audios:
@@ -203,21 +226,30 @@ def list_audios():
 
 @app.route('/api/audio/<audio_id>', methods=['DELETE'])
 def delete_audio(audio_id):
-    """Elimina un audio de MinIO y su entrada en MongoDB."""
+    user_token = request.args.get("user_token") or request.form.get("user_token")
+
+    if not user_token or not is_valid_token(user_token):
+        return jsonify({"error": "Token de usuario inválido"}), 400
+
     audio_doc = db.find_audio_by_id(audio_id)
     if not audio_doc:
         return jsonify({"error": "Audio no encontrado"}), 404
 
+    if audio_doc.get("user_token") != user_token:
+        return jsonify({"error": "Acceso no autorizado"}), 403
+
     try:
-        # Eliminar de MinIO
         storage_service.delete_file(audio_doc["object_name"])
-
-        # Eliminar de MongoDB
         db.delete_audio(audio_id)
-
         current_app.logger.info(f"Audio eliminado: {audio_id}")
         return jsonify({"message": "Audio eliminado correctamente"}), 200
-
     except Exception as e:
         current_app.logger.error(f"Error al eliminar audio {audio_id}: {e}")
         return jsonify({"error": "No se pudo eliminar el audio"}), 500
+
+@app.route('/api/register', methods=['POST'])
+def register_user():
+    """Genera un token UUIDv4."""
+    new_token = str(uuid.uuid4())
+    db.save_user(new_token)
+    return jsonify({"user_token": new_token}), 201

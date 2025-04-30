@@ -1,3 +1,4 @@
+import datetime
 from pymongo import MongoClient
 from flask import current_app
 
@@ -15,6 +16,7 @@ def init_db(app):
     if mongo_db is None:
         mongo_db = mongo_client["whispai"]
     return mongo_db
+
 
 def save_audio_metadata(metadata: dict):
     """Guarda un documento de metadatos de audio en la colección de MongoDB."""
@@ -55,6 +57,11 @@ def list_all_audios():
         raise RuntimeError("Base de datos no inicializada")
     return list(mongo_db["audios"].find())
 
+def list_audios_by_user(user_token: str):
+    """Devuelve todos los audios de un usuario."""
+    if mongo_db is None:
+        raise RuntimeError("Base de datos no inicializada")
+    return list(mongo_db["audios"].find({"user_token": user_token}))
 
 def delete_audio(audio_id: str):
     """Elimina un documento de MongoDB por ID."""
@@ -62,3 +69,12 @@ def delete_audio(audio_id: str):
         raise RuntimeError("Base de datos no inicializada")
     mongo_db["audios"].delete_one({"_id": audio_id})
 
+def save_user(user_token: str, name: str = None):
+    """Guarda un nuevo usuario en la base de datos."""
+    if mongo_db is None:
+        raise RuntimeError("Base de datos no inicializada")
+    mongo_db["users"].insert_one({
+        "user_token": user_token,
+        "name": name,
+        "created_at": datetime.datetime.utcnow()
+    })
