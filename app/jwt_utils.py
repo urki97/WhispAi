@@ -10,10 +10,11 @@ def generate_jwt(user_id: str, name: str = None) -> str:
         "sub": user_id,
         "name": name,
         "iat": datetime.datetime.utcnow(),
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=current_app.config["JWT_EXPIRATION_MINUTES"])
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(
+            minutes=current_app.config["JWT_EXPIRATION_MINUTES"]
+        )
     }
     return jwt.encode(payload, current_app.config["JWT_SECRET"], algorithm="HS256")
-
 
 def decode_jwt(token: str) -> dict:
     """Decodifica un JWT y devuelve el payload si es válido."""
@@ -25,6 +26,7 @@ def decode_jwt(token: str) -> dict:
         raise ValueError("Token inválido")
 
 def jwt_required(f):
+    """Decorator para proteger rutas con JWT."""
     @wraps(f)
     def decorated(*args, **kwargs):
         auth_header = request.headers.get("Authorization")

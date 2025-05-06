@@ -18,14 +18,16 @@ def init_db(app):
     return mongo_db
 
 def require_db():
+    """Lanza error si la base de datos aún no ha sido inicializada."""
     if mongo_db is None:
         raise RuntimeError("Base de datos no inicializada")
 
-### Usuarios ###
+# === Usuarios ===
 
 def create_user(name: str = None, email: str = None, password: str = None) -> dict:
     """Crea un nuevo usuario con email y contraseña (opcional nombre)."""
     require_db()
+
     if not email or not password:
         raise ValueError("Email y contraseña requeridos")
 
@@ -52,41 +54,52 @@ def get_user_by_email(email: str) -> dict | None:
     return mongo_db["users"].find_one({"email": email})
 
 def verify_password(stored_hash: str, password: str) -> bool:
+    """Verifica una contraseña contra su hash almacenado."""
     return check_password_hash(stored_hash, password)
 
-### Audios ###
+# === Audios ===
 
-def save_audio_metadata(metadata: dict):
+def save_audio_metadata(metadata: dict) -> str:
+    """Guarda los metadatos de un nuevo audio."""
     require_db()
     result = mongo_db["audios"].insert_one(metadata)
     return result.inserted_id
 
 def update_audio_metadata(audio_id: str, data: dict):
+    """Actualiza campos generales de un documento de audio."""
     require_db()
     mongo_db["audios"].update_one({"_id": audio_id}, {"$set": data})
 
-def find_audio_by_id(audio_id: str):
+def find_audio_by_id(audio_id: str) -> dict | None:
+    """Recupera un documento de audio por su ID."""
     require_db()
     return mongo_db["audios"].find_one({"_id": audio_id})
 
-def update_audio_transcription(audio_id, transcription_text):
+def update_audio_transcription(audio_id: str, transcription_text: str, language: str = "unknown"):
+    """Actualiza la transcripción y el idioma de un audio."""
     require_db()
     mongo_db["audios"].update_one(
         {"_id": audio_id},
-        {"$set": {"transcription": transcription_text}}
+        {"$set": {
+            "transcription": transcription_text,
+            "language": language
+        }}
     )
 
 def update_audio_status(audio_id: str, status: str, error_message: str = None):
+    """Actualiza el estado del procesamiento de un audio."""
     require_db()
     update_data = {"status": status}
     if error_message:
         update_data["error_message"] = error_message
     mongo_db["audios"].update_one({"_id": audio_id}, {"$set": update_data})
 
-def list_audios_by_user_id(user_id: str):
+def list_audios_by_user_id(user_id: str) -> list[dict]:
+    """Devuelve todos los audios pertenecientes a un usuario."""
     require_db()
     return list(mongo_db["audios"].find({"owner_id": user_id}))
 
 def delete_audio(audio_id: str):
+    """Elimina un audio por ID."""
     require_db()
     mongo_db["audios"].delete_one({"_id": audio_id})

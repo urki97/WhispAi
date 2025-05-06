@@ -5,93 +5,39 @@ import datetime
 import tempfile
 import threading
 from config import Config
-from app import app, storage_service, db
+from app import app, storage_service, db, whisper_service
 from app.whisper_service import ensure_model_loaded, transcribe_audio
 from app.jwt_utils import generate_jwt, jwt_required
 from pydub.utils import mediainfo
 
-### uTILIDADES ###
+### UTILIDADES ###
 
 def allowed_file(filename: str) -> bool:
-    """Comprueba si la extensión del archivo es permitida."""
     if '.' not in filename:
         return False
     ext = filename.rsplit('.', 1)[1].lower()
     return ext in Config.ALLOWED_EXTENSIONS
 
 def format_transcription(text: str, output_format: str) -> str:
-    """Formatea la transcripción según el formato solicitado."""
     if output_format == "text":
         return text.strip()
     elif output_format == "sentences":
-        sentences = text.replace('. ', '.\n')
-        return sentences.strip()
+        return text.replace('. ', '.\n').strip()
     elif output_format == "summary":
         return "[Resumen no implementado]"
     elif output_format == "actions":
         return "[Acciones no implementadas]"
     else:
-        return text.strip()  
+        return text.strip()
 
-def background_transcription(audio_id: str, object_name: str, mode: str = "accurate", output_format: str = "text"):
-    """Procesa la transcripción en segundo plano, aplicando el formato deseado."""
-    with app.app_context():
-        tmp_file = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                storage_service.download_file(object_name, tmp_file.name)
-
-            def map_precision_to_model(precision: str) -> str:
-                """Mapea un nivel de precisión a un modelo Whisper."""
-                return {
-                    "fast": "small",
-                    "balanced": "medium",
-                    "accurate": "base"
-                }.get(precision, "base")  # default a 'base' si no válido
-
-            # En background_transcription:
-            duration = get_audio_duration(tmp_file.name)
-            model_name = None
-
-            # Si el usuario ha especificado la precisión, usarla
-            if mode in ["fast", "balanced", "accurate"]:
-                model_name = map_precision_to_model(mode)
-            else:
-                # Si no, elegir en base a duración
-                model_name = select_model_by_duration(duration)
-
-            ensure_model_loaded(model_name)
-
-            transcription = transcribe_audio(tmp_file.name)
-            transcription = format_transcription(transcription, output_format)
-
-            db.update_audio_transcription(audio_id, transcription)
-            db.update_audio_status(audio_id, "completed")
-            db.update_audio_status(audio_id, "completed")
-            db.update_audio_metadata(audio_id, {
-                "duration": duration,
-                "model_used": model_name
-            })
-
-
-            current_app.logger.info(f"Transcripción completada para audio ID {audio_id}")
-
-        except Exception as e:
-            error_message = str(e)
-            current_app.logger.error(f"Error en transcripción background para {audio_id}: {error_message}")
-            db.update_audio_status(audio_id, "failed", error_message)
-
-        finally:
-            if tmp_file and os.path.exists(tmp_file.name):
-                os.remove(tmp_file.name)
-
-def get_audio_duration(file_path: str) -> float:
-    """Devuelve la duración del audio en segundos."""
-    info = mediainfo(file_path)
-    return float(info['duration'])
+def map_precision_to_model(precision: str) -> str:
+    return {
+        "fast": "small",
+        "balanced": "medium",
+        "accurate": "base"
+    }.get(precision, "base")
 
 def select_model_by_duration(duration: float) -> str:
-    """Elige el modelo Whisper según la duración del audio."""
     if duration < 30:
         return "small"
     elif duration < 90:
@@ -99,9 +45,51 @@ def select_model_by_duration(duration: float) -> str:
     else:
         return "base"
 
+def get_audio_duration(file_path: str) -> float:
+    try:
+        info = mediainfo(file_path)
+        return float(info['duration'])
+    except Exception as e:
+        current_app.logger.warning(f"No se pudo obtener duración del audio: {e}")
+        return 0.0
 
+def background_transcription(audio_id: str, object_name: str, mode: str = "accurate", output_format: str = "text"):
+    with app.app_context():
+        tmp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                storage_service.download_file(object_name, tmp_file.name)
 
-### DIFERENTES RUTAS IMPLEMENTADAS ###
+            duration = get_audio_duration(tmp_file.name)
+            if mode in ["fast", "balanced", "accurate"]:
+                model_name = map_precision_to_model(mode)
+            else:
+                model_name = select_model_by_duration(duration)
+
+            ensure_model_loaded(model_name)
+
+            language = whisper_service.detect_language(tmp_file.name)
+            transcription = transcribe_audio(tmp_file.name)
+            transcription = format_transcription(transcription, output_format)
+
+            db.update_audio_transcription(audio_id, transcription, language)
+            db.update_audio_status(audio_id, "completed")
+            db.update_audio_metadata(audio_id, {
+                "duration": duration,
+                "model_used": model_name
+            })
+
+            current_app.logger.info(f"Transcripción completada para audio ID {audio_id}")
+
+        except Exception as e:
+            error_message = str(e)
+            current_app.logger.error(f"Error en transcripción background para {audio_id}: {error_message}")
+            db.update_audio_status(audio_id, "failed", error_message)
+        finally:
+            if tmp_file and os.path.exists(tmp_file.name):
+                os.remove(tmp_file.name)
+
+### RUTAS API ###
 
 @app.route('/api/login', methods=['POST'])
 def login_user():
@@ -122,7 +110,6 @@ def login_user():
 
 @app.route('/api/register', methods=['POST'])
 def register_user():
-    """Crea un usuario nuevo."""
     data = request.get_json()
     try:
         user = db.create_user(
@@ -143,7 +130,6 @@ def register_user():
 @app.route('/api/me', methods=['GET'])
 @jwt_required
 def get_current_user():
-    """Devuelve información del usuario autenticado a través del JWT."""
     user = request.user 
     return jsonify({
         "user_id": user["_id"],
@@ -155,7 +141,6 @@ def get_current_user():
 @app.route('/api/upload', methods=['POST'])
 @jwt_required
 def upload_audio():
-    """Sube un archivo de audio, guarda metadatos y lanza transcripción en background."""
     if 'file' not in request.files:
         return jsonify({"error": "No se encontró el archivo en la petición"}), 400
 
@@ -224,7 +209,6 @@ def get_transcription_result(audio_id):
         "transcription": audio_doc.get("transcription"),
         "duration": audio_doc.get("duration"),
         "model_used": audio_doc.get("model_used"),
-
     }
 
     if audio_doc.get("error_message"):
@@ -235,7 +219,6 @@ def get_transcription_result(audio_id):
 @app.route('/api/list', methods=['GET'])
 @jwt_required
 def list_audios():
-    """Devuelve una lista de audios del usuario."""
     audios = db.list_audios_by_user_id(request.user["_id"])
     result = [{
         "id": a["_id"],
@@ -244,7 +227,6 @@ def list_audios():
         "upload_time": a.get("upload_time"),
         "format": a.get("output_format")
     } for a in audios]
-
     return jsonify(result), 200
 
 @app.route('/api/audio/<audio_id>', methods=['DELETE'])
