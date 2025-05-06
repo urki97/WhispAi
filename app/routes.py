@@ -8,6 +8,9 @@ from config import Config
 from app import app, storage_service, db
 from app.whisper_service import ensure_model_loaded, transcribe_audio
 from app.jwt_utils import generate_jwt, jwt_required
+from pydub.utils import mediainfo
+
+### uTILIDADES ###
 
 def allowed_file(filename: str) -> bool:
     """Comprueba si la extensión del archivo es permitida."""
@@ -38,18 +41,38 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
                 storage_service.download_file(object_name, tmp_file.name)
 
-            if mode == "fast":
-                ensure_model_loaded("small")
-            elif mode == "longtext":
-                ensure_model_loaded("medium")
+            def map_precision_to_model(precision: str) -> str:
+                """Mapea un nivel de precisión a un modelo Whisper."""
+                return {
+                    "fast": "small",
+                    "balanced": "medium",
+                    "accurate": "base"
+                }.get(precision, "base")  # default a 'base' si no válido
+
+            # En background_transcription:
+            duration = get_audio_duration(tmp_file.name)
+            model_name = None
+
+            # Si el usuario ha especificado la precisión, usarla
+            if mode in ["fast", "balanced", "accurate"]:
+                model_name = map_precision_to_model(mode)
             else:
-                ensure_model_loaded("base")
+                # Si no, elegir en base a duración
+                model_name = select_model_by_duration(duration)
+
+            ensure_model_loaded(model_name)
 
             transcription = transcribe_audio(tmp_file.name)
             transcription = format_transcription(transcription, output_format)
 
             db.update_audio_transcription(audio_id, transcription)
             db.update_audio_status(audio_id, "completed")
+            db.update_audio_status(audio_id, "completed")
+            db.update_audio_metadata(audio_id, {
+                "duration": duration,
+                "model_used": model_name
+            })
+
 
             current_app.logger.info(f"Transcripción completada para audio ID {audio_id}")
 
@@ -61,6 +84,24 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
         finally:
             if tmp_file and os.path.exists(tmp_file.name):
                 os.remove(tmp_file.name)
+
+def get_audio_duration(file_path: str) -> float:
+    """Devuelve la duración del audio en segundos."""
+    info = mediainfo(file_path)
+    return float(info['duration'])
+
+def select_model_by_duration(duration: float) -> str:
+    """Elige el modelo Whisper según la duración del audio."""
+    if duration < 30:
+        return "small"
+    elif duration < 90:
+        return "medium"
+    else:
+        return "base"
+
+
+
+### DIFERENTES RUTAS IMPLEMENTADAS ###
 
 @app.route('/api/login', methods=['POST'])
 def login_user():
@@ -99,6 +140,18 @@ def register_user():
         "name": user.get("name")
     }), 201
 
+@app.route('/api/me', methods=['GET'])
+@jwt_required
+def get_current_user():
+    """Devuelve información del usuario autenticado a través del JWT."""
+    user = request.user 
+    return jsonify({
+        "user_id": user["_id"],
+        "name": user.get("name"),
+        "email": user.get("email"),
+        "created_at": user.get("created_at")
+    }), 200
+
 @app.route('/api/upload', methods=['POST'])
 @jwt_required
 def upload_audio():
@@ -113,7 +166,7 @@ def upload_audio():
     if not allowed_file(file.filename):
         return jsonify({"error": "Tipo de archivo no soportado"}), 400
 
-    mode = request.form.get("mode") or "accurate"
+    mode = request.form.get("mode") or "auto"
     output_format = request.form.get("format") or "text"
     file_id = str(uuid.uuid4())
     ext = os.path.splitext(file.filename)[1]
@@ -169,6 +222,9 @@ def get_transcription_result(audio_id):
         "status": audio_doc.get("status", "processing"),
         "format": audio_doc.get("output_format", "text"),
         "transcription": audio_doc.get("transcription"),
+        "duration": audio_doc.get("duration"),
+        "model_used": audio_doc.get("model_used"),
+
     }
 
     if audio_doc.get("error_message"):

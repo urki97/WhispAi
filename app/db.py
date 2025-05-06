@@ -54,6 +54,11 @@ def save_audio_metadata(metadata: dict):
         raise RuntimeError("Base de datos no inicializada")
     return mongo_db["audios"].insert_one(metadata)
 
+def update_audio_metadata(audio_id: str, data: dict):
+    if mongo_db is None:
+        raise RuntimeError("Base de datos no inicializada")
+    mongo_db["audios"].update_one({"_id": audio_id}, {"$set": data})
+
 def find_audio_by_id(audio_id):
     if mongo_db is None:
         raise RuntimeError("Base de datos no inicializada")
@@ -84,3 +89,4 @@ def delete_audio(audio_id: str):
     if mongo_db is None:
         raise RuntimeError("Base de datos no inicializada")
     mongo_db["audios"].delete_one({"_id": audio_id})
+
