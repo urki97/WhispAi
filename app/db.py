@@ -75,15 +75,18 @@ def find_audio_by_id(audio_id: str) -> dict | None:
     require_db()
     return mongo_db["audios"].find_one({"_id": audio_id})
 
-def update_audio_transcription(audio_id: str, transcription_text: str, language: str = "unknown"):
-    """Actualiza la transcripción y el idioma de un audio."""
-    require_db()
+def update_audio_transcription(audio_id, transcription_text, language="unknown", summary=None):
+    if mongo_db is None:
+        raise RuntimeError("Base de datos no inicializada")
+    update_fields = {
+        "transcription": transcription_text,
+        "language": language
+    }
+    if summary:
+        update_fields["summary"] = summary
     mongo_db["audios"].update_one(
         {"_id": audio_id},
-        {"$set": {
-            "transcription": transcription_text,
-            "language": language
-        }}
+        {"$set": update_fields}
     )
 
 def update_audio_status(audio_id: str, status: str, error_message: str = None):

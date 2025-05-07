@@ -1,5 +1,5 @@
-Flask
-pymongo
+Flask==2.3.3
+pymongo[srv]
 python-dotenv
 minio
 openai-whisper
@@ -7,3 +7,6 @@ PyJWT
 werkzeug
 pydub
 whisperx
+whisper
+openai
+torch

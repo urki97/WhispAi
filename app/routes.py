@@ -1,14 +1,18 @@
-from flask import current_app, request, jsonify
 import os
 import uuid
 import datetime
 import tempfile
 import threading
+
+from flask import current_app, request, jsonify
+from pydub.utils import mediainfo
+
 from config import Config
 from app import app, storage_service, db, whisper_service
-from app.whisper_service import ensure_model_loaded, transcribe_audio
 from app.jwt_utils import generate_jwt, jwt_required
-from pydub.utils import mediainfo
+from app.llm_utils import generate_summary
+
+
 
 ### UTILIDADES ###
 
@@ -61,23 +65,39 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
                 storage_service.download_file(object_name, tmp_file.name)
 
             duration = get_audio_duration(tmp_file.name)
+
+            def map_precision_to_model(precision: str) -> str:
+                return {
+                    "fast": "small",
+                    "balanced": "medium",
+                    "accurate": "base"
+                }.get(precision, "base")
+
             if mode in ["fast", "balanced", "accurate"]:
                 model_name = map_precision_to_model(mode)
             else:
                 model_name = select_model_by_duration(duration)
 
-            ensure_model_loaded(model_name)
+            whisper_service.ensure_model_loaded(model_name)
 
             language = whisper_service.detect_language(tmp_file.name)
             transcription = transcribe_audio(tmp_file.name)
             transcription = format_transcription(transcription, output_format)
 
-            db.update_audio_transcription(audio_id, transcription, language)
-            db.update_audio_status(audio_id, "completed")
+            audio_doc = db.find_audio_by_id(audio_id)
+            summary = None
+            summary_type = audio_doc.get("summary_type", "short")
+
+            if audio_doc.get("generate_summary"):
+                summary = llm_utils.generate_summary(transcription, summary_type)
+
+            db.update_audio_transcription(audio_id, transcription, language, summary=summary)
             db.update_audio_metadata(audio_id, {
                 "duration": duration,
-                "model_used": model_name
+                "model_used": model_name,
+                "summary_type": summary_type
             })
+            db.update_audio_status(audio_id, "completed")
 
             current_app.logger.info(f"Transcripción completada para audio ID {audio_id}")
 
@@ -85,9 +105,12 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
             error_message = str(e)
             current_app.logger.error(f"Error en transcripción background para {audio_id}: {error_message}")
             db.update_audio_status(audio_id, "failed", error_message)
+
         finally:
             if tmp_file and os.path.exists(tmp_file.name):
                 os.remove(tmp_file.name)
+
+
 
 ### RUTAS API ###
 
@@ -153,6 +176,9 @@ def upload_audio():
 
     mode = request.form.get("mode") or "auto"
     output_format = request.form.get("format") or "text"
+    generate_summary = request.form.get("generate_summary", "false").lower() == "true"
+    summary_type = request.form.get("summary_type", "short")
+
     file_id = str(uuid.uuid4())
     ext = os.path.splitext(file.filename)[1]
     object_name = file_id + ext
@@ -174,7 +200,9 @@ def upload_audio():
         "transcription": None,
         "status": "processing",
         "output_format": output_format,
-        "owner_id": request.user["_id"]
+        "owner_id": request.user["_id"],
+        "generate_summary": generate_summary,
+        "summary_type": summary_type,
     }
 
     try:
@@ -191,6 +219,7 @@ def upload_audio():
         "id": file_id,
         "mode": mode
     }), 202
+
 
 @app.route('/api/result/<audio_id>', methods=['GET'])
 @jwt_required
@@ -209,12 +238,18 @@ def get_transcription_result(audio_id):
         "transcription": audio_doc.get("transcription"),
         "duration": audio_doc.get("duration"),
         "model_used": audio_doc.get("model_used"),
-    }
+        "language": audio_doc.get("language", "unknown"),
+        "generate_summary": audio_doc.get("generate_summary", False),
+        "summary_type": audio_doc.get("summary_type", "short"),
+        "summary": audio_doc.get("summary")
+}
+
 
     if audio_doc.get("error_message"):
         response["error_message"] = audio_doc["error_message"]
 
     return jsonify(response), 200
+
 
 @app.route('/api/list', methods=['GET'])
 @jwt_required
