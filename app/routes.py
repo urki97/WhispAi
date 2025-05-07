@@ -10,7 +10,8 @@ from pydub.utils import mediainfo
 from config import Config
 from app import app, storage_service, db, whisper_service
 from app.jwt_utils import generate_jwt, jwt_required
-from app.llm_utils import generate_summary
+from app.llm_utils import generate_summary, llm_utils
+from app.whisper_service import transcribe_audio
 
 
 
