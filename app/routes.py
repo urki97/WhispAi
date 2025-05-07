@@ -10,7 +10,7 @@ from pydub.utils import mediainfo
 from config import Config
 from app import app, storage_service, db, whisper_service
 from app.jwt_utils import generate_jwt, jwt_required
-from app.llm_utils import generate_summary, llm_utils
+from app.llm_utils import generate_summary
 from app.whisper_service import transcribe_audio
 
 
@@ -90,7 +90,7 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
             summary_type = audio_doc.get("summary_type", "short")
 
             if audio_doc.get("generate_summary"):
-                summary = llm_utils.generate_summary(transcription, summary_type)
+                summary = generate_summary(transcription, summary_type)
 
             db.update_audio_transcription(audio_id, transcription, language, summary=summary)
             db.update_audio_metadata(audio_id, {
