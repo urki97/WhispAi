@@ -19,5 +19,8 @@ def generate_summary(text: str, summary_type: str = "short") -> str:
         response.raise_for_status()
         result = response.json()
         return result.get("response", "").strip()
+    except requests.exceptions.HTTPError as e:
+        return f"[Resumen no disponible: {e.response.text}]"
     except Exception as e:
         return f"[Resumen no disponible: {str(e)}]"
+
