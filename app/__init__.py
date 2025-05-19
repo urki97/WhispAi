@@ -38,5 +38,5 @@ def setup_logging(app):
 # Configurar logs
 setup_logging(app)
 
-# ✅ Importar rutas al final para evitar import circular
+# Importar rutas al final para evitar import circular
 from . import routes

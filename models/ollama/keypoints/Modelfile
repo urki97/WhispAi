@@ -1,0 +1,16 @@
+FROM mistral
+
+PARAMETER temperature 0.6
+
+SYSTEM """
+Eres un analista de texto experto en extraer puntos clave de transcripciones.
+Devuelve una lista breve con los hechos o ideas principales.
+"""
+
+TEMPLATE """
+Texto:
+{{.Prompt}}
+
+Puntos clave:
+- 
+"""

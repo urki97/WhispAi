@@ -31,3 +31,5 @@ class Config:
 
     # Whisper
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
+
+    ALLOWED_FORMATS = {"text", "summary", "keypoints", "interview", "sentences"}

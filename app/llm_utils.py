@@ -2,25 +2,43 @@ import os
 import requests
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-MODEL_NAME = os.getenv("LLM_MODEL", "mistral")
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "mistral")
 
-def generate_summary(text: str, summary_type: str = "short") -> str:
-    """Genera un resumen usando el modelo LLM vía Ollama."""
+# Mapea los formatos de salida a modelos personalizados de Ollama
+FORMAT_TO_MODEL = {
+    "summary": "summary",
+    "keypoints": "keypoints",
+    "interview": "interview",
+    "text": DEFAULT_MODEL        
+}
+
+def generate_llm_output(text: str, output_format: str, language: str = "unknown") -> str:
+    """Genera una salida personalizada usando LLM según el formato deseado."""
+
     if not text:
-        return "[Resumen no disponible: texto vacío]"
+        return "[Salida no disponible: texto vacío]"
 
-    prompt = f"Resume el siguiente texto con un estilo '{summary_type}' de forma clara, estructurada y concisa:\n\n{text}"
+    # Prompt base por tipo
+    prompts = {
+        "summary": f"Resume el siguiente texto de forma clara y concisa:\n\n{text}",
+        "keypoints": f"Extrae los puntos clave del siguiente texto:\n\n{text}",
+        "interview": f"Reorganiza el texto como una entrevista con preguntas y respuestas:\n\n{text}",
+        "sentences": f"Divide el texto en frases separadas por líneas:\n\n{text}",
+        "text": text.strip()
+    }
+
+    prompt = prompts.get(output_format)
+    if not prompt:
+        return f"[Formato no soportado: {output_format}]"
+
+    model_name = FORMAT_TO_MODEL.get(output_format, DEFAULT_MODEL)
 
     try:
         response = requests.post(
             f"{OLLAMA_HOST}/api/generate",
-            json={"model": MODEL_NAME, "prompt": prompt}
+            json={"model": model_name, "prompt": prompt, "stream": False}
         )
         response.raise_for_status()
-        result = response.json()
-        return result.get("response", "").strip()
-    except requests.exceptions.HTTPError as e:
-        return f"[Resumen no disponible: {e.response.text}]"
+        return response.json().get("response", "").strip()
     except Exception as e:
-        return f"[Resumen no disponible: {str(e)}]"
-
+        return f"[Salida no disponible: {str(e)}]"
