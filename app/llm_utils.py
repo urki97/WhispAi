@@ -1,44 +1,37 @@
 import os
 import requests
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-DEFAULT_MODEL = os.getenv("LLM_MODEL", "mistral")
+OPEN_WEBUI_HOST = os.getenv("OPEN_WEBUI_HOST", "http://host.docker.internal:8080")
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "WhispAi Resumen")
+API_KEY = os.getenv("LLM_API_KEY")
 
-# Mapea los formatos de salida a modelos personalizados de Ollama
 FORMAT_TO_MODEL = {
-    "summary": "summary",
-    "keypoints": "keypoints",
-    "interview": "interview",
-    "text": DEFAULT_MODEL        
+    "summary": "WhispAi Resumen",
+    "keypoints": "WhispAi MindMap",
+    "interview": "WhispAi Prueba",
+    "text": DEFAULT_MODEL
 }
 
 def generate_llm_output(text: str, output_format: str, language: str = "unknown") -> str:
-    """Genera una salida personalizada usando LLM según el formato deseado."""
-
     if not text:
         return "[Salida no disponible: texto vacío]"
 
-    # Prompt base por tipo
-    prompts = {
-        "summary": f"Resume el siguiente texto de forma clara y concisa:\n\n{text}",
-        "keypoints": f"Extrae los puntos clave del siguiente texto:\n\n{text}",
-        "interview": f"Reorganiza el texto como una entrevista con preguntas y respuestas:\n\n{text}",
-        "sentences": f"Divide el texto en frases separadas por líneas:\n\n{text}",
-        "text": text.strip()
-    }
-
-    prompt = prompts.get(output_format)
-    if not prompt:
-        return f"[Formato no soportado: {output_format}]"
-
     model_name = FORMAT_TO_MODEL.get(output_format, DEFAULT_MODEL)
 
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_KEY}"
+    }
+
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": text}],
+        "stream": False
+    }
+
     try:
-        response = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
-            json={"model": model_name, "prompt": prompt, "stream": False}
-        )
+        response = requests.post(f"{OPEN_WEBUI_HOST}/api/chat/completions", json=payload, headers=headers, timeout=30)
         response.raise_for_status()
-        return response.json().get("response", "").strip()
+        return response.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
     except Exception as e:
-        return f"[Salida no disponible: {str(e)}]"
+        return f"[Error LLM: {str(e)}]"

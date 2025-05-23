@@ -32,4 +32,10 @@ class Config:
     # Whisper
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 
+    # LLM / Open WebUI
+    OPEN_WEBUI_HOST = os.getenv("OPEN_WEBUI_HOST", "http://192.168.1.26:8080")
+    LLM_API_KEY = os.getenv("LLM_API_KEY")
+    LLM_DEFAULT_MODEL = os.getenv("LLM_MODEL", "WhispAi Resumen")
+
+    # Tipos de formato de salida soportados
     ALLOWED_FORMATS = {"text", "summary", "keypoints", "interview", "sentences"}

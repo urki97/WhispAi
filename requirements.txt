@@ -11,3 +11,4 @@ whisperx
 whisper
 openai
 torch
+pika
