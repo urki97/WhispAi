@@ -1,0 +1,346 @@
+import os
+import uuid
+import datetime
+import tempfile
+import threading
+
+from flask import current_app, request, jsonify
+from pydub.utils import mediainfo
+
+from config import Config
+from app import app, storage_service, db, whisper_service
+from app.jwt_utils import generate_jwt, jwt_required, generate_refresh_token, decode_jwt
+from app.llm_utils import generate_llm_output
+from app.whisper_service import transcribe_audio
+from rabbitmq.emisor import send_audio_task
+
+def allowed_file(filename: str) -> bool:
+    if '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower()
+    return ext in Config.ALLOWED_EXTENSIONS
+
+def map_precision_to_model(precision: str) -> str:
+    return {
+        "fast": "small",
+        "balanced": "medium",
+        "accurate": "base"
+    }.get(precision, "base")
+
+def select_model_by_duration(duration: float) -> str:
+    if duration < 30:
+        return "small"
+    elif duration < 90:
+        return "medium"
+    else:
+        return "base"
+
+def get_audio_duration(file_path: str) -> float:
+    try:
+        info = mediainfo(file_path)
+        return float(info['duration'])
+    except Exception as e:
+        current_app.logger.warning(f"No se pudo obtener duración del audio: {e}")
+        return 0.0
+
+def background_transcription(audio_id: str, object_name: str, mode: str = "accurate", output_format: str = "text"):
+    with app.app_context():
+        tmp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                storage_service.download_file(object_name, tmp_file.name)
+
+            duration = get_audio_duration(tmp_file.name)
+
+            if mode in ["fast", "balanced", "accurate"]:
+                model_name = map_precision_to_model(mode)
+            else:
+                model_name = select_model_by_duration(duration)
+
+            whisper_service.ensure_model_loaded(model_name)
+
+            language = whisper_service.detect_language(tmp_file.name)
+            transcription = transcribe_audio(tmp_file.name)
+
+            audio_doc = db.find_audio_by_id(audio_id)
+            generate_output = audio_doc.get("generate_llm_output", False)
+
+            if generate_output and output_format in Config.ALLOWED_FORMATS:
+                formatted_output = generate_llm_output(transcription, output_format, language)
+                llm_model_used = output_format
+            else:
+                formatted_output = transcription.strip()
+                llm_model_used = None
+
+            db.update_audio_transcription(
+                audio_id,
+                transcription_text=transcription,
+                language=language,
+                output_text=formatted_output
+            )
+
+            db.update_audio_metadata(audio_id, {
+                "duration": duration,
+                "model_used": model_name,
+                "language": language,
+                "llm_model_used": llm_model_used
+            })
+
+            db.update_audio_status(audio_id, "completed")
+
+        except Exception as e:
+            error_message = str(e)
+            current_app.logger.error(f"Error en transcripción background para {audio_id}: {error_message}")
+            db.update_audio_status(audio_id, "failed", error_message)
+
+        finally:
+            if tmp_file and os.path.exists(tmp_file.name):
+                os.remove(tmp_file.name)
+
+# === AUTENTICACIÓN ===
+
+@app.route('/api/login', methods=['POST'])
+def login_user():
+    data = request.get_json()
+    if not data or not data.get("email") or not data.get("password"):
+        return jsonify({"error": "Email y contraseña requeridos"}), 400
+
+    user = db.get_user_by_email(data["email"])
+    if not user or not db.verify_password(user["password_hash"], data["password"]):
+        return jsonify({"error": "Credenciales inválidas"}), 401
+
+    access_token = generate_jwt(user["_id"], user.get("name"))
+    refresh_token = generate_refresh_token(user["_id"])
+
+    return jsonify({
+        "user_id": user["_id"],
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "name": user.get("name")
+    }), 200
+
+@app.route('/api/refresh', methods=['POST'])
+def refresh_token():
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Refresh token no proporcionado"}), 401
+
+    token = auth_header.split(" ")[1]
+
+    try:
+        payload = decode_jwt(token, refresh=True)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 401
+
+    user = db.get_user_by_id(payload["sub"])
+    if not user:
+        return jsonify({"error": "Usuario no válido"}), 403
+
+    new_access_token = generate_jwt(user["_id"], user.get("name"))
+    return jsonify({"access_token": new_access_token}), 200
+
+@app.route('/api/register', methods=['POST'])
+def register_user():
+    data = request.get_json()
+    try:
+        user = db.create_user(
+            name=data.get("name"),
+            email=data.get("email"),
+            password=data.get("password")
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    access_token = generate_jwt(user["_id"], user.get("name"))
+    refresh_token = generate_refresh_token(user["_id"])
+
+    return jsonify({
+        "user_id": user["_id"],
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "name": user.get("name")
+    }), 201
+
+@app.route('/api/me', methods=['GET'])
+@jwt_required
+def get_current_user():
+    user = request.user
+    return jsonify({
+        "user_id": user["_id"],
+        "name": user.get("name"),
+        "email": user.get("email"),
+        "created_at": user.get("created_at")
+    }), 200
+
+# === RESULTADOS ===
+
+@app.route('/api/result/<audio_id>', methods=['GET'])
+@jwt_required
+def get_transcription_result(audio_id):
+    audio_doc = db.find_audio_by_id(audio_id)
+    if not audio_doc:
+        return jsonify({"error": "Audio no encontrado"}), 404
+
+    if audio_doc.get("owner_id") != request.user["_id"]:
+        return jsonify({"error": "Acceso no autorizado"}), 403
+
+    response = {
+        "id": audio_id,
+        "status": audio_doc.get("status", "processing"),
+        "format": audio_doc.get("output_format", "text"),
+        "transcription": audio_doc.get("transcription"),
+        "duration": audio_doc.get("duration"),
+        "model_used": audio_doc.get("model_used"),
+        "language": audio_doc.get("language", "unknown"),
+        "generate_llm_output": audio_doc.get("generate_llm_output", True),
+        "llm_model_used": audio_doc.get("llm_model_used"),
+        "output_text": audio_doc.get("output_text")
+    }
+
+    if audio_doc.get("error_message"):
+        response["error_message"] = audio_doc["error_message"]
+
+    return jsonify(response), 200
+
+@app.route('/api/reinterpret/<audio_id>', methods=['POST'])
+@jwt_required
+def reinterpret_audio(audio_id):
+    data = request.get_json()
+    output_format = data.get("format", "text")
+
+    if output_format not in Config.ALLOWED_FORMATS:
+        return jsonify({"error": "Formato de salida no válido"}), 400
+
+    audio_doc = db.find_audio_by_id(audio_id)
+    if not audio_doc:
+        return jsonify({"error": "Audio no encontrado"}), 404
+
+    if audio_doc.get("owner_id") != request.user["_id"]:
+        return jsonify({"error": "Acceso no autorizado"}), 403
+
+    transcription = audio_doc.get("transcription")
+    if not transcription:
+        return jsonify({"error": "No hay transcripción disponible"}), 400
+
+    language = audio_doc.get("language", "unknown")
+    new_output = generate_llm_output(transcription, output_format, language)
+
+    llm_model_used = output_format if output_format in Config.ALLOWED_FORMATS else None
+
+    db.update_audio_transcription(audio_id, transcription_text=transcription, language=language, output_text=new_output)
+    db.update_audio_metadata(audio_id, {
+        "output_format": output_format,
+        "llm_model_used": llm_model_used
+    })
+
+    return jsonify({
+        "message": "Interpretación actualizada correctamente",
+        "output_format": output_format,
+        "output_text": new_output,
+        "llm_model_used": llm_model_used
+    }), 200
+
+# === GESTIÓN DE AUDIOS ===
+
+@app.route('/api/list', methods=['GET'])
+@jwt_required
+def list_audios():
+    audios = db.list_audios_by_user_id(request.user["_id"])
+    result = [{
+        "id": a["_id"],
+        "filename": a.get("filename"),
+        "status": a.get("status"),
+        "upload_time": a.get("upload_time"),
+        "format": a.get("output_format")
+    } for a in audios]
+    return jsonify(result), 200
+
+@app.route('/api/audio/<audio_id>', methods=['DELETE'])
+@jwt_required
+def delete_audio(audio_id):
+    audio_doc = db.find_audio_by_id(audio_id)
+    if not audio_doc:
+        return jsonify({"error": "Audio no encontrado"}), 404
+
+    if audio_doc.get("owner_id") != request.user["_id"]:
+        return jsonify({"error": "Acceso no autorizado"}), 403
+
+    try:
+        storage_service.delete_file(audio_doc["object_name"])
+        db.delete_audio(audio_id)
+        return jsonify({"message": "Audio eliminado correctamente"}), 200
+    except Exception as e:
+        current_app.logger.error(f"Error al eliminar audio {audio_id}: {e}")
+        return jsonify({"error": "No se pudo eliminar el audio"}), 500
+
+@app.route('/api/upload', methods=['POST'])
+@jwt_required
+def upload_audio():
+    if 'file' not in request.files:
+        return jsonify({"error": "No se encontró el archivo en la petición"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No se seleccionó ningún archivo"}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({"error": "Tipo de archivo no soportado"}), 400
+
+    mode = request.form.get("mode") or "auto"
+    output_format = request.form.get("format") or "text"
+    generate_llm_output_flag = request.form.get("generate_llm_output", "false").lower() == "true"
+
+    if output_format not in Config.ALLOWED_FORMATS:
+        return jsonify({"error": "Formato de salida no válido"}), 400
+
+    file_id = str(uuid.uuid4())
+    ext = os.path.splitext(file.filename)[1]
+    object_name = f"{file_id}{ext}"
+
+    try:
+        storage_service.save_file(file, object_name)
+    except Exception as e:
+        current_app.logger.error(f"Error guardando archivo en MinIO: {e}")
+        return jsonify({"error": "Error al guardar el archivo en almacenamiento"}), 500
+
+    metadata = {
+        "_id": file_id,
+        "filename": file.filename,
+        "content_type": file.mimetype,
+        "bucket": Config.MINIO_BUCKET,
+        "object_name": object_name,
+        "size": file.content_length or 0,
+        "upload_time": datetime.datetime.utcnow(),
+        "transcription": None,
+        "status": "processing",
+        "output_format": output_format,
+        "owner_id": request.user["_id"],
+        "generate_llm_output": generate_llm_output_flag,
+        "output_text": None,
+        "language": "unknown",
+        "model_used": None,
+        "duration": None
+    }
+
+    try:
+        db.save_audio_metadata(metadata)
+    except Exception as e:
+        current_app.logger.error(f"Error guardando metadatos en MongoDB: {e}")
+        return jsonify({"error": "Error al guardar metadatos en la base de datos"}), 500
+
+    try:
+        send_audio_task({
+            "audio_id": file_id,
+            "object_name": object_name,
+            "output_format": output_format,
+            "mode": mode
+        })
+    except Exception as e:
+        current_app.logger.error(f"Error al enviar mensaje a RabbitMQ: {e}")
+        return jsonify({"error": "No se pudo enviar la tarea de transcripción"}), 500
+
+    return jsonify({
+        "message": "Audio recibido. Procesamiento encolado.",
+        "id": file_id,
+        "status": "processing"
+    }), 202

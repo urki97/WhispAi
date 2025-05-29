@@ -1,21 +1,33 @@
 import datetime
 import uuid
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 from flask import current_app
 from werkzeug.security import generate_password_hash, check_password_hash
+from config import Config
 
 mongo_client = None
 mongo_db = None
 
-def init_db(app):
+def init_db(app=None):
     """Inicializa la conexión a la base de datos MongoDB."""
     global mongo_client, mongo_db
-    uri = app.config["MONGO_URI"]
+
+    if app:
+        uri = app.config["MONGO_URI"]
+        db_name = app.config.get("MONGO_DB", "whispai")
+    else:
+        uri = Config.MONGO_URI
+        db_name = "whispai"
+
     mongo_client = MongoClient(uri)
-    mongo_db = mongo_client.get_default_database()
-    if mongo_db is None:
-        mongo_db = mongo_client["whispai"]
+    mongo_db = mongo_client[db_name]
+
+    # Crear índice único en 'email' para evitar duplicados
+    mongo_db["users"].create_index("email", unique=True)
+
     return mongo_db
+
 
 def require_db():
     """Lanza error si la base de datos aún no ha sido inicializada."""
@@ -31,19 +43,19 @@ def create_user(name: str = None, email: str = None, password: str = None) -> di
     if not email or not password:
         raise ValueError("Email y contraseña requeridos")
 
-    if mongo_db["users"].find_one({"email": email}):
+    try:
+        user_id = str(uuid.uuid4())
+        user_doc = {
+            "_id": user_id,
+            "name": name,
+            "email": email,
+            "password_hash": generate_password_hash(password),
+            "created_at": datetime.datetime.utcnow()
+        }
+        mongo_db["users"].insert_one(user_doc)
+        return user_doc
+    except DuplicateKeyError:
         raise ValueError("El email ya está registrado")
-
-    user_id = str(uuid.uuid4())
-    user_doc = {
-        "_id": user_id,
-        "name": name,
-        "email": email,
-        "password_hash": generate_password_hash(password),
-        "created_at": datetime.datetime.utcnow()
-    }
-    mongo_db["users"].insert_one(user_doc)
-    return user_doc
 
 def get_user_by_id(user_id: str) -> dict | None:
     require_db()
@@ -76,8 +88,7 @@ def find_audio_by_id(audio_id: str) -> dict | None:
     return mongo_db["audios"].find_one({"_id": audio_id})
 
 def update_audio_transcription(audio_id, transcription_text, language="unknown", output_text=None):
-    if mongo_db is None:
-        raise RuntimeError("Base de datos no inicializada")
+    require_db()
     update_fields = {
         "transcription": transcription_text,
         "language": language

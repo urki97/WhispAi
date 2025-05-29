@@ -1,0 +1,29 @@
+# Flask
+FLASK_APP=app
+FLASK_ENV=production
+SECRET_KEY=supersecretkey
+
+# MongoDB (accesible desde fuera)
+MONGO_URI=mongodb://localhost:27017
+
+# MinIO (accesible desde fuera)
+MINIO_ENDPOINT=http://localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=whispai-audios
+MINIO_SECURE=false
+
+# Open WebUI (ya accesible directamente)
+OPEN_WEBUI_HOST=http://192.168.58.101:3001/
+LLM_MODEL=WhispAi Resumen
+LLM_API_KEY=Bearer sk-03913556bcef468e834b4e568ed30c09
+
+# RabbitMQ (debe apuntar a Docker si el broker corre allí)
+RABBITMQ_HOST=localhost
+RABBITMQ_USER=admin
+RABBITMQ_PASSWORD=admin
+
+# JWT
+JWT_SECRET=
+JWT_EXPIRATION_MINUTES=30
+JWT_REFRESH_DAYS=365

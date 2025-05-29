@@ -1,17 +1,26 @@
-from flask import Flask
-from config import Config
 import os
 import logging
+from flask import Flask
+from config import Config
 from logging.handlers import RotatingFileHandler
-from . import db, storage_service
 
-# Crear instancia de Flask
-app = Flask(__name__)
-app.config.from_object(Config)
+def create_app():
+    """Crea y configura la instancia de la app Flask."""
+    app = Flask(__name__)
+    app.config.from_object(Config)
 
-# Inicializar servicios
-db.init_db(app)
-storage_service.init_storage(app)
+    # Inicializar servicios
+    from app import db, storage_service
+    db.init_db(app)
+    storage_service.init_storage(app)
+
+    setup_logging(app)
+
+    # Registrar Blueprints
+    from app.routes import api
+    app.register_blueprint(api)
+
+    return app
 
 def setup_logging(app):
     """Configura logging profesional para WhispAi."""
@@ -34,9 +43,3 @@ def setup_logging(app):
     app.logger.addHandler(error_handler)
     app.logger.setLevel(logging.DEBUG)
     app.logger.info('WhispAi startup')
-
-# Configurar logs
-setup_logging(app)
-
-# Importar rutas al final para evitar import circular
-from . import routes
