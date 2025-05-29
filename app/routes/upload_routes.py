@@ -4,7 +4,8 @@ import datetime
 from flask import request, jsonify, current_app
 from config import Config
 from app.routes import api
-from app import db, storage_service
+from app import db
+from app.services import storage_service
 from app.utils.jwt_utils import jwt_required
 from rabbitmq.emisor import send_audio_task
 

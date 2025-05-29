@@ -10,7 +10,8 @@ def create_app():
     app.config.from_object(Config)
 
     # Inicializar servicios
-    from app import db, storage_service
+    from app import db
+    from app.services import storage_service
     db.init_db(app)
     storage_service.init_storage(app)
 
