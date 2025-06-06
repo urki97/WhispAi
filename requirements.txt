@@ -3,6 +3,7 @@ pymongo[srv]
 python-dotenv
 minio
 openai-whisper
+requests
 PyJWT
 werkzeug
 pydub
@@ -10,3 +11,4 @@ whisperx
 whisper
 openai
 torch
+pika

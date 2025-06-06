@@ -1,0 +1,22 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: whispai_rabbit
+    ports:
+      - "5672:5672"       # AMQP
+      - "15672:15672"     # Web UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
+    networks:
+      - whispai_net
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  whispai_net:
+    external: true

@@ -1,13 +1,15 @@
 uploads/
 venv_whis/
+venv/
 __pycache__/
 *.py[cod]
 
 # Logs and runtime files
 *.log
-
+venv
 # Environment variables file (do not commit secrets)
-.env
+.env.local
+.env.docker
 
 # Operating system files
 .DS_Store

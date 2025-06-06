@@ -10,30 +10,15 @@ from pydub.utils import mediainfo
 from config import Config
 from app import app, storage_service, db, whisper_service
 from app.jwt_utils import generate_jwt, jwt_required
-from app.llm_utils import generate_summary
+from app.llm_utils import generate_llm_output
 from app.whisper_service import transcribe_audio
-
-
-
-### UTILIDADES ###
+from app.rabbitmq_service import publish_message
 
 def allowed_file(filename: str) -> bool:
     if '.' not in filename:
         return False
     ext = filename.rsplit('.', 1)[1].lower()
     return ext in Config.ALLOWED_EXTENSIONS
-
-def format_transcription(text: str, output_format: str) -> str:
-    if output_format == "text":
-        return text.strip()
-    elif output_format == "sentences":
-        return text.replace('. ', '.\n').strip()
-    elif output_format == "summary":
-        return "[Resumen no implementado]"
-    elif output_format == "actions":
-        return "[Acciones no implementadas]"
-    else:
-        return text.strip()
 
 def map_precision_to_model(precision: str) -> str:
     return {
@@ -67,13 +52,6 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
 
             duration = get_audio_duration(tmp_file.name)
 
-            def map_precision_to_model(precision: str) -> str:
-                return {
-                    "fast": "small",
-                    "balanced": "medium",
-                    "accurate": "base"
-                }.get(precision, "base")
-
             if mode in ["fast", "balanced", "accurate"]:
                 model_name = map_precision_to_model(mode)
             else:
@@ -83,23 +61,33 @@ def background_transcription(audio_id: str, object_name: str, mode: str = "accur
 
             language = whisper_service.detect_language(tmp_file.name)
             transcription = transcribe_audio(tmp_file.name)
-            transcription = format_transcription(transcription, output_format)
 
             audio_doc = db.find_audio_by_id(audio_id)
-            summary = None
-            summary_type = audio_doc.get("summary_type", "short")
+            generate_output = audio_doc.get("generate_llm_output", False)
 
-            if audio_doc.get("generate_summary"):
-                summary = generate_summary(transcription, summary_type)
+            if generate_output and output_format in ["summary", "keypoints", "interview", "text"]:
+                formatted_output = generate_llm_output(transcription, output_format, language)
+                llm_model_used = output_format
+                current_app.logger.info(f"Salida LLM generada con modelo: {llm_model_used}")
+            else:
+                formatted_output = transcription.strip()
+                llm_model_used = None
 
-            db.update_audio_transcription(audio_id, transcription, language, summary=summary)
+            db.update_audio_transcription(
+                audio_id,
+                transcription_text=transcription,
+                language=language,
+                output_text=formatted_output
+            )
+
             db.update_audio_metadata(audio_id, {
                 "duration": duration,
                 "model_used": model_name,
-                "summary_type": summary_type
+                "language": language,
+                "llm_model_used": llm_model_used
             })
-            db.update_audio_status(audio_id, "completed")
 
+            db.update_audio_status(audio_id, "completed")
             current_app.logger.info(f"Transcripción completada para audio ID {audio_id}")
 
         except Exception as e:
@@ -177,9 +165,12 @@ def upload_audio():
 
     mode = request.form.get("mode") or "auto"
     output_format = request.form.get("format") or "text"
-    generate_summary = request.form.get("generate_summary", "false").lower() == "true"
-    summary_type = request.form.get("summary_type", "short")
 
+    ALLOWED_FORMATS = {"text", "summary", "keypoints", "interview", "sentences"}
+    if output_format not in Config.ALLOWED_FORMATS:
+        return jsonify({"error": "Formato de salida no válido"}), 400
+
+    generate_llm_output_flag = request.form.get("generate_llm_output", "false").lower() == "true"
     file_id = str(uuid.uuid4())
     ext = os.path.splitext(file.filename)[1]
     object_name = file_id + ext
@@ -191,20 +182,24 @@ def upload_audio():
         return jsonify({"error": "Error al guardar el archivo en almacenamiento"}), 500
 
     metadata = {
-        "_id": file_id,
-        "filename": file.filename,
-        "content_type": file.mimetype,
-        "bucket": current_app.config["MINIO_BUCKET"],
-        "object_name": object_name,
-        "size": file.content_length or 0,
-        "upload_time": datetime.datetime.utcnow(),
-        "transcription": None,
-        "status": "processing",
-        "output_format": output_format,
-        "owner_id": request.user["_id"],
-        "generate_summary": generate_summary,
-        "summary_type": summary_type,
-    }
+    "_id": file_id,
+    "filename": file.filename,
+    "content_type": file.mimetype,
+    "bucket": current_app.config["MINIO_BUCKET"],
+    "object_name": object_name,
+    "size": file.content_length or 0,
+    "upload_time": datetime.datetime.utcnow(),
+    "transcription": None,
+    "status": "processing",
+    "output_format": output_format,
+    "owner_id": request.user["_id"],
+    "generate_llm_output": generate_llm_output_flag,
+    "output_text": None,
+    "language": "unknown",
+    "model_used": None,
+    "duration": None
+}
+
 
     try:
         db.save_audio_metadata(metadata)
@@ -240,9 +235,9 @@ def get_transcription_result(audio_id):
         "duration": audio_doc.get("duration"),
         "model_used": audio_doc.get("model_used"),
         "language": audio_doc.get("language", "unknown"),
-        "generate_summary": audio_doc.get("generate_summary", False),
-        "summary_type": audio_doc.get("summary_type", "short"),
-        "summary": audio_doc.get("summary")
+        "generate_llm_output": audio_doc.get("generate_llm_output", True),
+        "llm_model_used": audio_doc.get("llm_model_used"),
+        "output_text": audio_doc.get("output_text")
 }
 
 
@@ -250,6 +245,45 @@ def get_transcription_result(audio_id):
         response["error_message"] = audio_doc["error_message"]
 
     return jsonify(response), 200
+
+@app.route('/api/reinterpret/<audio_id>', methods=['POST'])
+@jwt_required
+def reinterpret_audio(audio_id):
+    data = request.get_json()
+    output_format = data.get("format")
+
+    ALLOWED_FORMATS = {"text", "summary", "keypoints", "interview", "sentences"}
+    if output_format not in ALLOWED_FORMATS:
+        return jsonify({"error": "Formato de salida no válido"}), 400
+
+    audio_doc = db.find_audio_by_id(audio_id)
+    if not audio_doc:
+        return jsonify({"error": "Audio no encontrado"}), 404
+
+    if audio_doc.get("owner_id") != request.user["_id"]:
+        return jsonify({"error": "Acceso no autorizado"}), 403
+
+    transcription = audio_doc.get("transcription")
+    if not transcription:
+        return jsonify({"error": "No hay transcripción disponible"}), 400
+
+    language = audio_doc.get("language", "unknown")
+    new_output = generate_llm_output(transcription, output_format, language)
+
+    llm_model_used = output_format if output_format in ["summary", "keypoints", "interview", "sentences"] else None
+
+    db.update_audio_transcription(audio_id, transcription_text=transcription, language=language, output_text=new_output)
+    db.update_audio_metadata(audio_id, {
+        "output_format": output_format,
+        "llm_model_used": llm_model_used
+    })
+
+    return jsonify({
+        "message": "Interpretación actualizada correctamente",
+        "output_format": output_format,
+        "output_text": new_output,
+        "llm_model_used": llm_model_used
+    }), 200
 
 
 @app.route('/api/list', methods=['GET'])
@@ -283,3 +317,33 @@ def delete_audio(audio_id):
     except Exception as e:
         current_app.logger.error(f"Error al eliminar audio {audio_id}: {e}")
         return jsonify({"error": "No se pudo eliminar el audio"}), 500
+    
+@app.route('/api/prueba', methods=['POST'])
+def prueba_rabbit():
+    if 'file' not in request.files:
+        return jsonify({"error": "No se encontró el archivo en la petición"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No se seleccionó ningún archivo"}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({"error": "Tipo de archivo no soportado"}), 400
+    
+    file_id = str(uuid.uuid4())
+    ext = os.path.splitext(file.filename)[1]
+    object_name = file_id + ext
+
+    try:
+        storage_service.save_file(file, object_name)
+    except Exception as e:
+        current_app.logger.error(f"Error guardando archivo en MinIO: {e}")
+        return jsonify({"error": "Error al guardar el archivo en almacenamiento"}), 500
+    
+    publish_message(object_name)
+
+    return jsonify({
+        "message": "Archivo subido correctamente y mensaje enviado a RabbitMQ",
+        "id": file_id,
+        "object_name": object_name
+    }), 202

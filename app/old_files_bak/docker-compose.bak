@@ -1,5 +1,27 @@
 version: '3.8'
 services:
+  app:
+    build: .
+    container_name: whispai_app
+    env_file:
+    - .env.docker
+    ports:
+      - "5000:5000"
+    depends_on:
+      mongo:
+        condition: service_started
+      minio:
+        condition: service_started
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: flask run --host=0.0.0.0
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - whispai_net
+
   mongo:
     image: mongo:6.0
     container_name: whispai_mongo
