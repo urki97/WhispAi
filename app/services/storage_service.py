@@ -46,22 +46,30 @@ def save_file(file, object_name=None):
         raise RuntimeError("Cliente de MinIO no inicializado")
 
     try:
-        object_name = object_name or secure_filename(file.filename)
-        data = file.read()
+        if hasattr(file, "filename"):  # FileStorage
+            object_name = object_name or secure_filename(file.filename)
+            content_type = file.mimetype
+            data = file.read()
+        else:  # BytesIO u otro objeto similar
+            object_name = object_name or "audio.wav"
+            content_type = "application/octet-stream"
+            data = file.read()
+
         file_size = len(data)
+        current_app.logger.info(f"📤 Subiendo {object_name} ({file_size} bytes) a MinIO...")
 
         minio_client.put_object(
             bucket_name,
             object_name,
             io.BytesIO(data),
             file_size,
-            content_type=file.mimetype
+            content_type=content_type
         )
 
         return object_name
 
     except S3Error as e:
-        current_app.logger.error(f"Error al subir archivo a MinIO: {e}")
+        current_app.logger.error(f"❌ Error al subir archivo a MinIO: {e}")
         raise
 
 def download_file(object_name: str, download_path: str):

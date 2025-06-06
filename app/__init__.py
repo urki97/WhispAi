@@ -44,3 +44,8 @@ def setup_logging(app):
     app.logger.addHandler(error_handler)
     app.logger.setLevel(logging.DEBUG)
     app.logger.info('WhispAi startup')
+
+# Reexportar servicios para uso externo (como consumidor.py)
+from app import db as db
+from app.services import storage_service as storage_service
+from app.services import whisper_service as whisper_service

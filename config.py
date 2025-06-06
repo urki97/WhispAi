@@ -37,8 +37,8 @@ class Config:
     MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
     # Archivos
-    MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB
-    ALLOWED_EXTENSIONS = {"wav", "mp3", "ogg", "m4a"}
+    MAX_CONTENT_LENGTH = 200 * 1024 * 1024  # 50 MB
+    ALLOWED_EXTENSIONS = {"wav", "mp3", "ogg", "m4a", "mp4", "WMA"}
 
     # Whisper
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
@@ -49,9 +49,9 @@ class Config:
     LLM_DEFAULT_MODEL = os.getenv("LLM_MODEL", "WhispAi Resumen")
 
     # RabbitMQ
-    RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
-    RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
-    RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
+    RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "192.168.58.103")
+    RABBITMQ_USER = os.getenv("RABBITMQ_USER", "admin")
+    RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "admin")
 
     # Formatos de salida LLM permitidos
     ALLOWED_FORMATS = {"text", "summary", "keypoints", "interview", "sentences"}

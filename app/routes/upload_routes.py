@@ -1,4 +1,5 @@
 import os
+import io
 import uuid
 import datetime
 from flask import request, jsonify, current_app
@@ -37,7 +38,9 @@ def upload_audio():
     object_name = f"{file_id}{ext}"
 
     try:
-        storage_service.save_file(file, object_name)
+        data = file.read()
+        file.seek(0)
+        storage_service.save_file(io.BytesIO(data), object_name)
     except Exception as e:
         current_app.logger.error(f"Error guardando archivo en MinIO: {e}")
         return jsonify({"error": "Error al guardar el archivo en almacenamiento"}), 500
@@ -48,7 +51,7 @@ def upload_audio():
         "content_type": file.mimetype,
         "bucket": Config.MINIO_BUCKET,
         "object_name": object_name,
-        "size": file.content_length or 0,
+        "size": len(data),
         "upload_time": datetime.datetime.utcnow(),
         "transcription": None,
         "status": "processing",
@@ -101,7 +104,10 @@ def prueba_rabbit():
     object_name = f"{file_id}{ext}"
 
     try:
-        storage_service.save_file(file, object_name)
+        data = file.read()
+        file.seek(0)
+        storage_service.save_file(io.BytesIO(data), object_name)
+
     except Exception as e:
         current_app.logger.error(f"Error guardando archivo en MinIO: {e}")
         return jsonify({"error": "Error al guardar el archivo en almacenamiento"}), 500

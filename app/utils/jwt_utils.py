@@ -18,7 +18,7 @@ def generate_jwt(user_id: str, name: str = None) -> str:
         "name": name,
         "iat": datetime.datetime.utcnow(),
         "exp": datetime.datetime.utcnow() + datetime.timedelta(
-            minutes=get_config_value("JWT_EXPIRATION_MINUTES", 5)
+            minutes=get_config_value("JWT_EXPIRATION_MINUTES",30)
         )
     }
     return jwt.encode(payload, get_config_value("JWT_SECRET"), algorithm="HS256")
@@ -69,3 +69,7 @@ def generate_refresh_token(user_id: str) -> str:
         "type": "refresh"
     }
     return jwt.encode(payload, get_config_value("JWT_SECRET"), algorithm="HS256")
+
+
+
+# def refresh_token_required(f): # REFRESH TOKEN ---> ACCESS TOKEN
